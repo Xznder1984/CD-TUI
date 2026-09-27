@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cd-tui"
+version = "1.0.0"
+description = "A terminal directory bookmarking and navigation tool with a companion settings GUI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "CD-TUI contributors" }]
+keywords = ["tui", "terminal", "bookmark", "directory", "navigation", "cd", "textual"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Console :: Curses",
+    "Environment :: X11 Applications",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Desktop Environment :: File Managers",
+    "Topic :: System :: Shells",
+    "Topic :: Terminals",
+    "Typing :: Typed",
+]
+dependencies = [
+    "textual>=0.80",
+    "platformdirs>=3.0",
+]
+
+[project.optional-dependencies]
+# Optional pretty GUI. The app falls back to plain tkinter automatically.
+gui = ["customtkinter>=5.0"]
+dev = [
+    "customtkinter>=5.0",
+    "mypy>=1.8",
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/Xznder1984/CD-TUI"
+Repository = "https://github.com/Xznder1984/CD-TUI"
+Issues = "https://github.com/Xznder1984/CD-TUI/issues"
+
+[project.scripts]
+cdtui = "cdtui.main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cdtui*"]
+
+[tool.setuptools.package-data]
+cdtui = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    # The Tkinter toolkit is imported dynamically at runtime.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/cdtui"]
+strict = true
+warn_unreachable = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["textual.*"]
+ignore_missing_imports = true

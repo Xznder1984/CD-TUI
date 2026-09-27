@@ -1,0 +1,8 @@
+# CD-TUI runtime dependencies.
+#
+# tkinter is intentionally absent: it ships with CPython (and is provided by the
+# python3-tk system package on Debian/Ubuntu).  customtkinter is an optional
+# enhancement -- cd-tui detects at import time and falls back to plain tkinter
+# when it is missing.
+textual>=0.80
+platformdirs>=3.0
