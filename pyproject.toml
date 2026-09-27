@@ -45,6 +45,10 @@ dev = [
     "customtkinter>=5.0",
     "mypy>=1.8",
     "pytest>=8.0",
+    # tests/test_tui.py drives the Textual app through its async pilot, and
+    # pytest.ini sets asyncio_mode = auto, so these tests need the plugin.
+    # Without it pytest aborts with "Unknown config option".
+    "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
 
