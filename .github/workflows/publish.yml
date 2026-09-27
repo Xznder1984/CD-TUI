@@ -13,6 +13,9 @@ on:
 
 permissions:
   contents: read
+  # Trusted publishing mints a short-lived OIDC token; without this the upload
+  # fails with "missing or insufficient OIDC token permissions".
+  id-token: write
 
 jobs:
   publish:
