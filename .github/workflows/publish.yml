@@ -1,0 +1,46 @@
+name: Publish to PyPI
+
+# Publishing happens when a GitHub release is published, so the tag is the
+# single source of truth for what is on PyPI.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish (e.g. v1.0.0)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and upload
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cd-tui/
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build
+
+      - name: Build
+        run: python -m build
+
+      # Fail before uploading anything if the metadata or description is broken.
+      - name: Validate
+        run: |
+          python -m pip install --upgrade twine
+          twine check --strict dist/*
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
