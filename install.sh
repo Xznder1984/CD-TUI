@@ -51,6 +51,21 @@ CDTUI_GIT_REF="${CDTUI_GIT_REF:-main}"
 # Lowest supported CPython, as "major minor".
 CDTUI_MIN_PYTHON="${CDTUI_MIN_PYTHON:-3.10}"
 
+# Where the installer puts its own virtualenv. This is only used when the
+# system interpreter is "externally managed" (PEP 668) and pip therefore
+# refuses to install into it, which is the default on Homebrew python, the
+# python.org builds, Debian/Ubuntu system python, and anything installed by
+# pyenv in system mode. Rather than bailing out, the installer provisions this
+# virtualenv and puts cd-tui in it.
+CDTUI_VENV_DIR="${CDTUI_VENV_DIR:-$HOME/.venvs/cdtui}"
+
+# The interpreter used to install cd-tui and, later, to run it. It starts as the
+# system python3 and is repointed at the virtualenv above the moment PEP 668
+# gets in the way, so the rest of the script does not have to care which one it
+# ended up with. Set CDTUI_PY to override the choice, e.g. to install into a
+# virtualenv you already have.
+CDTUI_PY="${CDTUI_PY:-python3}"
+
 # --------------------------------------------------------------------------
 # Constants
 # --------------------------------------------------------------------------
@@ -100,73 +115,121 @@ HINT
 }
 
 check_python() {
-    if ! command -v python3 >/dev/null 2>&1; then
-        warn "python3 was not found on your PATH."
+    # Validate whichever interpreter we are actually going to use, which is not
+    # necessarily the one on PATH once CDTUI_PY overrides it.
+    if ! command -v "$CDTUI_PY" >/dev/null 2>&1; then
+        warn "no usable python: '${CDTUI_PY}' was not found on your PATH."
         printf '\n'
         python_install_hint
         exit 1
     fi
 
     local found
-    found="$(python3 --version 2>&1 | awk '{print $2}')"
+    found="$("$CDTUI_PY" --version 2>&1 | awk '{print $2}')"
 
-    if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= tuple(int(p) for p in '${CDTUI_MIN_PYTHON}'.split('.')) else 1)" 2>/dev/null; then
-        warn "python3 ${found} is too old; ${CDTUI_MIN_PYTHON}+ is required."
+    if ! "$CDTUI_PY" -c "import sys; sys.exit(0 if sys.version_info >= tuple(int(p) for p in '${CDTUI_MIN_PYTHON}'.split('.')) else 1)" 2>/dev/null; then
+        warn "python ${found} is too old; ${CDTUI_MIN_PYTHON}+ is required."
         printf '\n'
         python_install_hint
         exit 1
     fi
 
-    ok "found python3 ${found} at $(command -v python3)"
+    ok "found python ${found} at $(command -v "$CDTUI_PY")"
 }
 
 # --------------------------------------------------------------------------
 # Step 2 - install the package
 # --------------------------------------------------------------------------
 
+# Create (or reuse) the virtualenv that PEP 668 forces us into, and point
+# CDTUI_PY at it. Returns non-zero if a venv cannot be made, so the caller can
+# fall back to explaining the problem by hand.
+provision_venv() {
+    local venv_py="$CDTUI_VENV_DIR/bin/python"
+
+    if [ -x "$venv_py" ]; then
+        if "$venv_py" -c 'import cdtui' >/dev/null 2>&1; then
+            info "reusing the virtualenv at ${CDTUI_VENV_DIR}, which already has cd-tui"
+            CDTUI_PY="$venv_py"
+            return 0
+        fi
+        info "reusing the virtualenv at ${CDTUI_VENV_DIR}"
+    else
+        info "python is externally managed, so cd-tui goes into its own virtualenv"
+        mkdir -p "$(dirname "$CDTUI_VENV_DIR")" 2>/dev/null || true
+        if ! "$CDTUI_PY" -m venv "$CDTUI_VENV_DIR" >/dev/null 2>&1; then
+            rm -rf "$CDTUI_VENV_DIR" 2>/dev/null || true
+            return 1
+        fi
+    fi
+
+    [ -x "$venv_py" ] || return 1
+    CDTUI_PY="$venv_py"
+    return 0
+}
+
+# One pip invocation against the current CDTUI_PY. Sets `pip_log` to the
+# captured output so the caller can decide what the failure meant.
+run_pip() {
+    pip_log="$(mktemp)"
+    "$CDTUI_PY" -m pip install $pip_user_flag --upgrade "$1" >"$pip_log" 2>&1
+}
+
 pip_install() {
     # In an active virtualenv, --user is rejected by pip; skip it there.
     # VIRTUAL_ENV/CONDA_PREFIX only exist after `activate`, so also ask the
-    # interpreter itself: the PEP 668 message below tells users to run
-    # ~/.venvs/cdtui/bin/python, which never sets those variables.
-    local user_flag="--user"
+    # interpreter itself: the interpreter can be a venv's python without those
+    # variables ever having been set in this shell.
+    local pip_user_flag="--user"
     if [ -n "${VIRTUAL_ENV:-}" ] || [ -n "${CONDA_PREFIX:-}" ] \
-        || python3 -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
-        user_flag=""
+        || "$CDTUI_PY" -c 'import sys; sys.exit(0 if sys.prefix != sys.base_prefix else 1)' 2>/dev/null; then
+        pip_user_flag=""
         info "virtual environment detected, installing without --user"
     fi
 
-    local log
-    log="$(mktemp)"
-    # shellcheck disable=SC2086  # user_flag is intentionally unquoted (may be empty)
-    if python3 -m pip install $user_flag --upgrade "$1" >"$log" 2>&1; then
-        rm -f "$log"
+    local pip_log=""
+    if run_pip "$1"; then
+        rm -f "$pip_log"
         return 0
     fi
 
-    if grep -qi "externally-managed-environment" "$log"; then
-        rm -f "$log"
+    # PEP 668. This is the common case on a stock macOS or Linux python, and
+    # bailing out here is what made the documented one-liner useless, so
+    # provision a virtualenv and install into that instead.
+    if grep -qi "externally-managed-environment" "$pip_log"; then
+        rm -f "$pip_log"
+        if provision_venv; then
+            pip_user_flag=""
+            if run_pip "$1"; then
+                rm -f "$pip_log"
+                return 0
+            fi
+            printf '%s' "$C_ERR" >&2
+            printf 'error pip failed inside %s. Full output:\n\n' "$CDTUI_VENV_DIR" >&2
+            cat "$pip_log" >&2
+            rm -f "$pip_log"
+            return 1
+        fi
+        rm -rf "$CDTUI_VENV_DIR" 2>/dev/null || true
         cat >&2 <<'MSG'
-error your Python installation is "externally managed" (PEP 668), so pip
-      refuses to install anything into it.
+error your Python is "externally managed" (PEP 668) and this script could not
+      create the virtualenv it wanted to install into.
 
 This script will not override that protection for you. Pick one:
 
-  a) Install into a virtual environment (recommended):
-         python3 -m venv ~/.venvs/cdtui
-         ~/.venvs/cdtui/bin/python -m pip install --upgrade cd-tui
-         ~/.venvs/cdtui/bin/cdtui
+  a) Make sure python can make virtualenvs, then re-run the installer:
+         Debian / Ubuntu    sudo apt install python3-venv
+         Fedora / RHEL      sudo dnf install python3-virtualenv
+         otherwise          python3 -m venv ~/.venvs/cdtui
 
-  b) Allow user installs for just this one command:
-         python3 -m pip install --user --break-system-packages cd-tui
-
-  c) Your distribution may ship an older cd-tui package that shadows it.
+  b) Re-run it with an interpreter you already trust, e.g. a venv:
+         CDTUI_PY=/path/to/venv/bin/python bash <(curl -fsSL <url>/install.sh)
 MSG
         return 1
     fi
 
-    if grep -qi "No module named pip" "$log"; then
-        rm -f "$log"
+    if grep -qi "No module named pip" "$pip_log"; then
+        rm -f "$pip_log"
         cat >&2 <<'MSG'
 error python3 cannot find pip.
 
@@ -178,8 +241,8 @@ MSG
 
     printf '%s' "$C_ERR" >&2
     printf 'error pip failed to install cd-tui. Full output:\n\n' >&2
-    cat "$log" >&2
-    rm -f "$log"
+    cat "$pip_log" >&2
+    rm -f "$pip_log"
     return 1
 }
 
@@ -203,9 +266,9 @@ install_package() {
         pip_install "$checkout" || die "installation failed."
     fi
 
-    python3 -c "import cdtui" >/dev/null 2>&1 \
-        || die "cd-tui installed but 'import cdtui' still fails. Check that python3 -m pip points at the interpreter you expect."
-    ok "cd-tui is importable by $(command -v python3)"
+    "$CDTUI_PY" -c "import cdtui" >/dev/null 2>&1 \
+        || die "cd-tui installed but 'import cdtui' still fails. Check that $CDTUI_PY -m pip points at the interpreter you expect."
+    ok "cd-tui is importable by $CDTUI_PY"
 }
 
 # --------------------------------------------------------------------------
@@ -228,15 +291,27 @@ strip_wrapper() {
 write_wrapper() {
     local rc="$1"
     strip_wrapper "$rc"
+
+    # The wrapper has to run the same interpreter that actually has cd-tui
+    # installed, which is not always the one on PATH: a PEP 668 system python
+    # sends us to a dedicated virtualenv instead. Resolve it to an absolute
+    # path now so the wrapper keeps working from any directory, and pass it in
+    # through a placeholder so the rest of the block stays a literal heredoc.
+    local runner
+    runner="$("$CDTUI_PY" -c 'import sys; print(sys.executable)' 2>/dev/null || true)"
+    [ -x "$runner" ] || runner="python3"
+    # Escape the characters sed would otherwise interpret in a replacement.
+    runner="$(printf '%s' "$runner" | sed -e 's/[&|\\]/\\&/g')"
+
     {
         printf '%s\n' "$BEGIN_MARKER"
-        cat <<'WRAPPER'
+        cat <<'WRAPPER' | sed "s|@@CDTUI_PY@@|$runner|g"
 # Added by CD-TUI (https://github.com/Xznder1984/CD-TUI).
 # A child process cannot change this shell's working directory, so cdtui writes
 # the folder you pick to ~/.cd_tui_target and exits; this function then performs
 # the real cd. Remove this block to uninstall the wrapper.
 cdtui() {
-    python3 -m cdtui.app "$@"
+    @@CDTUI_PY@@ -m cdtui.app "$@"
     local target_file="$HOME/.cd_tui_target"
     if [ -f "$target_file" ]; then
         local target
@@ -259,7 +334,7 @@ install_wrapper() {
     case "$shell_name" in
         fish|nushell|nu|csh|tcsh)
             warn "cd-tui's wrapper is written for bash and zsh, and your shell is '${shell_name}'."
-            warn "You can still use the TUI with:  python3 -m cdtui.app"
+            warn "You can still use the TUI with:  $CDTUI_PY -m cdtui.app"
             warn "but the 'cd' handoff has to be wired up by hand for ${shell_name}."
             printf '\n'
             return 0
@@ -295,7 +370,15 @@ print_success() {
 
     printf '\n%s%s installed.%s\n\n' "$C_OK" "CD-TUI" "$C_OFF"
     printf 'Bookmarks live in: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/cd-tui/config.json"
-    printf 'Add your first folder:  python3 -m cdtui.app --settings\n\n'
+    # Say so plainly when cd-tui went into its own virtualenv, otherwise the
+    # package is somewhere the user did not put it and will not find later.
+    if [ "$CDTUI_PY" != "python3" ]; then
+        printf 'Installed into: %s\n' "$CDTUI_PY"
+        printf 'To uninstall, delete that directory and the wrapper block below.\n'
+    fi
+    # Always name the interpreter that actually has cd-tui, which is not
+    # necessarily the one on PATH once PEP 668 has pushed us into a virtualenv.
+    printf 'Add your first folder:  %s -m cdtui.app --settings\n\n' "$CDTUI_PY"
     printf 'Reload your shell config, or just open a new terminal:\n'
     # The fallback branch prints $SHELL unexpanded on purpose: the user copies
     # that line into their own terminal, where it must still be a variable.

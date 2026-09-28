@@ -207,13 +207,48 @@ function Find-CdtuiPython {
 # Step 2 - install the package
 # ---------------------------------------------------------------------------
 
+# Create (or reuse) the virtualenv that PEP 668 forces us into and repoint the
+# script's interpreter at it. Returns $true on success. Every later step reads
+# $script:PythonExe, so switching it here is enough to move the install, the
+# import check, the config lookup and the generated wrapper all at once.
+function Initialize-CdtuiVenv {
+    $root = Join-Path $HOME 'venvs/cdtui'
+    $exe = Join-Path $root 'Scripts/python.exe'
+    if (-not $IsWindows) {
+        $exe = Join-Path $root 'bin/python'
+    }
+
+    if (Test-Path $exe) {
+        Write-Info "reusing the virtualenv at $root"
+    }
+    else {
+        Write-Info 'python is externally managed, so cd-tui goes into its own virtualenv'
+        try {
+            & $script:PythonExe @($script:PythonPrefix + @('-m', 'venv', $root)) 2>&1 | Out-Null
+        }
+        catch {
+            Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+            return $false
+        }
+    }
+
+    if (-not (Test-Path $exe)) {
+        Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+        return $false
+    }
+
+    $script:PythonExe = $exe
+    $script:PythonPrefix = @()
+    return $true
+}
+
 function Install-CdtuiWithPip {
     param([string]$Spec)
 
     # Inside a virtual environment pip rejects --user, so skip it there.
     # $env:VIRTUAL_ENV only exists after `activate`, so also ask the
-    # interpreter: the PEP 668 hint below points at a venv python invoked by
-    # absolute path, which never sets that variable.
+    # interpreter: the interpreter can be a venv's python without that variable
+    # ever having been set in this session.
     $userFlag = @('--user')
     $inVenv = $env:VIRTUAL_ENV
     if (-not $inVenv) {
@@ -236,15 +271,20 @@ function Install-CdtuiWithPip {
 
     $text = ($output | ForEach-Object { [string]$_ }) -join "`n"
 
-    if ($text -match 'No module named pip') {
-        Stop-WithError @'
-python cannot find pip.
-
-      Bootstrap it with:  python -m ensurepip --upgrade
-      then re-run this installer.
-'@
-    }
     if ($text -match 'externally-managed-environment') {
+        # The common case on a stock macOS or Linux python. Bailing out here is
+        # what made the documented one-liner useless, so provision a virtualenv
+        # and install into that instead.
+        if (Initialize-CdtuiVenv) {
+            $output = & $script:PythonExe @('-m', 'pip', 'install', '--upgrade', $Spec) 2>&1
+            if ($LASTEXITCODE -eq 0) { return }
+            $text = ($output | ForEach-Object { [string]$_ }) -join "`n"
+            Write-Host "error pip failed inside $(Join-Path $HOME 'venvs/cdtui'). Full output:" -ForegroundColor Red
+            Write-Host ''
+            Write-Host $text
+            exit 1
+        }
+
         # Use the interpreter we actually found: a bare `python` does not exist
         # on macOS or Linux, where the command is `python3`.  Build the venv paths
         # from the platform too, so the hint is copy-pasteable wherever it runs.
@@ -259,18 +299,53 @@ python cannot find pip.
             $venvRun = Join-Path $venvRoot 'bin/cdtui'
         }
         Stop-WithError @"
-your Python installation is "externally managed" (PEP 668), so pip refuses to
-install anything into it.
+your Python is "externally managed" (PEP 668) and this script could not create the
+virtualenv it wanted to install into.
 
 This script will not override that protection for you. Pick one:
 
-  a) Install into a virtual environment (recommended):
-         & $hintExe -m venv $venvDir
-         & $venvExe -m pip install --upgrade cd-tui
-         & $venvRun
+  a) Make sure python can make virtualenvs, then re-run the installer:
+         python -m venv `"$venvDir`"
 
-  b) Allow user installs for just this one command:
-         & $hintExe -m pip install --user --break-system-packages cd-tui
+  b) Re-run it with an interpreter you already trust, e.g. a venv:
+         -PythonExe $venvExe
+"@
+    }
+
+    if ($text -match 'No module named pip') {
+        Stop-WithError @'
+python cannot find pip.
+
+      Bootstrap it with:  python -m ensurepip --upgrade
+      then re-run this installer.
+'@
+    }
+    if ($text -match 'externally-managed-environment') {
+        # Reached only when Initialize-CdtuiVenv could not make a virtualenv.
+        # Use the interpreter we actually found: a bare `python` does not exist
+        # on macOS or Linux, where the command is `python3`.  Build the venv paths
+        # from the platform too, so the hint is copy-pasteable wherever it runs.
+        $hintExe = "'" + ($script:PythonExe -replace "'", "''") + "'"
+        $hintExe = $hintExe + ((($script:PythonPrefix | ForEach-Object { " '" + ($_ -replace "'", "''") + "'" }) -join ''))
+        $venvRoot = Join-Path $HOME 'venvs/cdtui'
+        $venvDir = $venvRoot
+        $venvExe = Join-Path $venvRoot 'Scripts/python.exe'
+        $venvRun = Join-Path $venvRoot 'Scripts/cdtui.exe'
+        if (-not $IsWindows) {
+            $venvExe = Join-Path $venvRoot 'bin/python'
+            $venvRun = Join-Path $venvRoot 'bin/cdtui'
+        }
+        Stop-WithError @"
+your Python is "externally managed" (PEP 668) and this script could not create the
+virtualenv it wanted to install into.
+
+This script will not override that protection for you. Pick one:
+
+  a) Make sure python can make virtualenvs, then re-run the installer:
+         & $hintExe -m venv $venvDir
+
+  b) Re-run it with an interpreter you already trust, e.g. that venv:
+         -PythonExe $venvExe
 "@
     }
 
@@ -310,9 +385,11 @@ function Install-CdtuiPackage {
 
     & $script:PythonExe @($script:PythonPrefix + @('-c', 'import cdtui')) 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Stop-WithError "cd-tui installed but 'import cdtui' still fails. Check that python -m pip points at the interpreter you expect."
+        Stop-WithError "cd-tui installed but 'import cdtui' still fails. Check that $script:PythonExe -m pip points at the interpreter you expect."
     }
-    Write-Ok 'cd-tui is importable by your python'
+    # Name the interpreter that really has cd-tui: after a PEP 668 fallback that
+    # is the virtualenv, not the `python` the user typed.
+    Write-Ok "cd-tui is importable by $script:PythonExe"
 }
 
 # ---------------------------------------------------------------------------
@@ -401,7 +478,16 @@ function Show-CdtuiSuccess {
     Write-Host 'CD-TUI installed.' -ForegroundColor Green
     Write-Host ''
     Write-Host "Bookmarks live in: $configPath"
-    Write-Host 'Add your first folder:  python -m cdtui.app --settings'
+    # Name the interpreter that actually has cd-tui, which is not necessarily
+    # the one on PATH once PEP 668 has pushed us into a virtualenv.
+    $runnerHint = "'" + ($script:PythonExe -replace "'", "''") + "'"
+    $runnerHint = $runnerHint + ((($script:PythonPrefix | ForEach-Object { " '" + ($_ -replace "'", "''") + "'" }) -join ''))
+    if ($script:PythonExe -and ($script:PythonExe -notlike 'python*')) {
+        Write-Host "Installed into: $runnerHint"
+        Write-Host 'To uninstall, delete that directory and the wrapper block in your profile.'
+        Write-Host ''
+    }
+    Write-Host "Add your first folder:  $runnerHint -m cdtui.app --settings"
     Write-Host ''
     Write-Host 'Reload your profile, or just open a new PowerShell window:'
     Write-Host "    . `"$PROFILE`""

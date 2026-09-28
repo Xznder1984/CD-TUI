@@ -142,6 +142,42 @@ def test_ps_pep668_hint_uses_platform_paths(ps_script: str) -> None:
     assert "$IsWindows" in ps_script, "the venv hint must not assume Windows"
 
 
+def test_both_installers_provision_a_venv_instead_of_only_complaining(
+    sh_script: str, ps_script: str
+) -> None:
+    """PEP 668 must be handled, not just reported.
+
+    A stock Homebrew python, the python.org builds and Debian's system python
+    are all "externally managed", so the documented one-liner died at the first
+    pip call on a very common setup. Both installers now build a virtualenv and
+    retry against it, and the advice printed as a last resort must not send
+    people to `pip install cd-tui`, a PyPI package that does not exist yet.
+    """
+    for name, script, call, retry in (
+        ("install.sh", sh_script, "if provision_venv; then", 'run_pip "$1"'),
+        (
+            "install.ps1",
+            ps_script,
+            "if (Initialize-CdtuiVenv)",
+            "'-m', 'pip', 'install', '--upgrade', $Spec",
+        ),
+    ):
+        pep668 = script.index("externally-managed-environment")
+        provision = script.index(call)
+        # PEP 668 is recognised first, and the venv is built before giving up.
+        assert pep668 < provision, f"{name}: the venv is attempted before PEP 668 is even noticed"
+        # The install is then retried against the venv, not abandoned.
+        assert script.index(retry, provision) > provision, f"{name}: no retry against the venv"
+
+    for name, script in (("install.sh", sh_script), ("install.ps1", ps_script)):
+        assert "pip install --upgrade cd-tui" not in script, (
+            f"{name}: still recommends installing the not-yet-published cd-tui from PyPI"
+        )
+        assert "--break-system-packages cd-tui" not in script, (
+            f"{name}: still recommends a PyPI install of a package that 404s"
+        )
+
+
 def test_ps_refuses_insecure_git_urls(ps_script: str) -> None:
     assert "-notlike 'https://*'" in ps_script
     assert "must be an https:// URL" in ps_script

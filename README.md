@@ -84,11 +84,32 @@ curl -fsSL https://raw.githubusercontent.com/Xznder1984/CD-TUI/main/install.sh |
   CDTUI_GIT_REF=v1.0.0 bash
 ```
 
-`CDTUI_PYPI_SPEC`, `CDTUI_GIT_URL`, `CDTUI_GIT_REF` and `CDTUI_MIN_PYTHON` are all
-accepted. Only `https://` git URLs are allowed.
+`CDTUI_PYPI_SPEC`, `CDTUI_GIT_URL`, `CDTUI_GIT_REF`, `CDTUI_MIN_PYTHON` and
+`CDTUI_PY` are all accepted. Only `https://` git URLs are allowed.
 
 Running the installer inside a virtual environment is fine: it detects the venv and
 installs without `--user`, which is the one thing `pip` rejects in that situation.
+
+If your `python3` is *externally managed* (PEP 668 — the default for Homebrew
+python, the python.org builds, and Debian/Ubuntu system python) then `pip` refuses
+to install into it at all. The installer does not override that protection;
+instead it creates `~/.venvs/cdtui`, installs there, and points the wrapper at
+that interpreter:
+
+```
+==> python is externally managed, so cd-tui goes into its own virtualenv
+ ok cd-tui is importable by /Users/you/.venvs/cdtui/bin/python
+Installed into: /Users/you/.venvs/cdtui/bin/python
+```
+
+To install into a virtualenv you already have, name it with `CDTUI_PY`:
+
+```bash
+CDTUI_PY=~/.venvs/mine/bin/python bash <(curl -fsSL https://raw.githubusercontent.com/Xznder1984/CD-TUI/main/install.sh)
+```
+
+Re-running the installer is safe: it reuses `~/.venvs/cdtui` rather than rebuilding
+it, and rewrites the wrapper block in place instead of appending a second copy.
 
 </details>
 
@@ -111,6 +132,11 @@ irm https://raw.githubusercontent.com/Xznder1984/CD-TUI/main/install.ps1 | iex
 The wrapper written to your `$PROFILE` calls the exact interpreter the installer
 verified, pinned to an absolute path, so it does not depend on a bare `python`
 being on `PATH` in later shells.
+
+As with the bash installer, an externally managed (PEP 668) interpreter is handled
+rather than merely reported: `install.ps1` creates `~/venvs/cdtui`, installs into
+it, and bakes that interpreter into the wrapper. Pass `-PythonExe` to install into
+a virtualenv you already have.
 
 </details>
 
