@@ -17,7 +17,7 @@ from __future__ import annotations
 __all__ = ["APP_NAME", "TARGET_FILE_NAME", "__version__"]
 
 #: Distribution version.  Kept in sync with ``pyproject.toml`` by hand.
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 #: Human readable application name used in titles and messages.
 APP_NAME = "CD-TUI"
