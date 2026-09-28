@@ -9,6 +9,8 @@ platform folder picker is not scriptable.
 
 from __future__ import annotations
 
+import functools
+import os
 import tkinter
 from collections.abc import Iterator
 from contextlib import suppress
@@ -23,17 +25,35 @@ from cdtui.config import Bookmark, ConfigError, load_bookmarks, save_bookmarks
 tk = pytest.importorskip("tkinter")
 
 
-def has_display() -> bool:
-    """Return ``True`` when a Tk window can actually be opened."""
+@functools.lru_cache(maxsize=1)
+def tk_unusable_reason() -> str | None:
+    """Return why the Tk tests cannot run here, or ``None`` if they can.
+
+    The probe deliberately opens *two* windows in a row. The tests build a fresh
+    root per test, so "a Tk window opened once" is not the property being
+    relied on. That distinction matters on the Windows CI images, whose
+    toolcache Python reports a ``tcl8.6/init.tcl`` it then cannot read again:
+    the first ``Tk()`` succeeds and every later one raises
+    ``TclError: Can't find a usable init.tcl``. Probing once turned a broken
+    runner into a wall of unrelated-looking fixture errors instead of a skip
+    that says what is actually wrong.
+    """
+    roots: list[tkinter.Tk] = []
     try:
-        root = tkinter.Tk()
-    except tkinter.TclError:
-        return False
-    root.destroy()
-    return True
+        for _ in range(2):
+            roots.append(tkinter.Tk())
+    except tkinter.TclError as error:
+        return f"tkinter is not usable: {error}"
+    finally:
+        for root in roots:
+            with suppress(tkinter.TclError):
+                root.destroy()
+    return None
 
 
-pytestmark = pytest.mark.skipif(not has_display(), reason="no display")
+TK_UNUSABLE = tk_unusable_reason()
+
+pytestmark = pytest.mark.skipif(TK_UNUSABLE is not None, reason=str(TK_UNUSABLE))
 
 
 @pytest.fixture
@@ -401,11 +421,16 @@ class TestAdd:
     def test_paths_are_expanded(
         self, panel: gui.SettingsPanel, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # normalize_path expands "~" via HOME on POSIX and USERPROFILE on
+        # Windows, then absolutises against the host drive, so compare with a
+        # host-derived expectation.
         monkeypatch.setenv("HOME", "/home/tester")
+        monkeypatch.setenv("USERPROFILE", "/home/tester")
+        expected = os.path.normpath(os.path.abspath("/home/tester/projects"))
         panel._alias_var.set("tilde")
         panel._path_var.set("~/projects")
         panel._on_add()
-        assert panel._bookmarks[-1].path == "/home/tester/projects"
+        assert panel._bookmarks[-1].path == expected
 
 
 # ---------------------------------------------------------------------------
@@ -495,8 +520,9 @@ class TestRepoint:
     ) -> None:
         self.patch_picker(panel, monkeypatch, "/two/alpha")
         panel._on_repoint(0)
-        assert panel._bookmarks[0].path == "/two/alpha"
-        assert load_bookmarks(config_file)[0].path == "/two/alpha"
+        expected = os.path.normpath(os.path.abspath("/two/alpha"))
+        assert panel._bookmarks[0].path == expected
+        assert load_bookmarks(config_file)[0].path == expected
 
     def test_the_picker_must_exist(self, panel: gui.SettingsPanel) -> None:
         save_bookmarks([Bookmark("here", str(Path.home()))], path=panel._config_file)

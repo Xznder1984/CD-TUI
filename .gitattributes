@@ -1,0 +1,8 @@
+* text=auto
+
+# Shell scripts must stay LF: a CRLF install.sh breaks both `bash -n` and the
+# interpreter, and Windows clone/checkout would otherwise rewrite it.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.py text eol=lf
+*.md text eol=lf

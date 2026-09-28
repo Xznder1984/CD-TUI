@@ -7,6 +7,7 @@ tree, bindings and key handling without needing a terminal.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -268,7 +269,9 @@ class TestChoose:
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
-        assert target.read_text(encoding="utf-8").strip() == "/one/beta"
+        assert target.read_text(encoding="utf-8").strip() == os.path.normpath(
+            os.path.abspath("/one/beta")
+        )
 
     async def test_quit_writes_nothing(
         self, three_bookmarks: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

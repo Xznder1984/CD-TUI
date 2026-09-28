@@ -11,6 +11,7 @@ import dataclasses
 import json
 import os
 import stat
+import types
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,16 @@ def sample() -> list[Bookmark]:
     ]
 
 
+def absolutised(path: str) -> str:
+    """Return ``path`` spelled the way :func:`cdtui.config.normalize_path` spells it.
+
+    Bookmarks are stored normalised, and ``os.path.abspath`` grafts the current
+    drive onto a rooted POSIX path, so asserting against a literal
+    ``"/one/delta"`` only holds on POSIX.
+    """
+    return os.path.normpath(os.path.abspath(path))
+
+
 # ---------------------------------------------------------------------------
 # Config location
 # ---------------------------------------------------------------------------
@@ -62,9 +73,27 @@ class TestConfigLocation:
         assert "Library" not in str(config.config_dir())
 
     def test_windows_uses_appdata(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Our own fallback must honour APPDATA.
         monkeypatch.setattr(config.sys, "platform", "win32")
         monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+        assert config._fallback_config_dir() == tmp_path / "Roaming" / "cd-tui"
+
+        # The platformdirs path cannot be asserted against a patched APPDATA,
+        # because on a real Windows host it resolves known folders through the
+        # Win32 API and ignores the environment entirely. What is ours to test
+        # is the backend selection: Windows must be asked for a roaming dir.
+        seen: dict[str, object] = {}
+
+        class FakeWindows:
+            def __init__(self, **kwargs: object) -> None:
+                seen.update(kwargs)
+                self.user_config_dir = str(tmp_path / "Roaming" / "cd-tui")
+
+        fake = types.SimpleNamespace(Windows=FakeWindows)
+        monkeypatch.setattr(config, "import_module", lambda _name: fake)
         assert config.config_dir() == tmp_path / "Roaming" / "cd-tui"
+        assert seen["appname"] == "cd-tui"
+        assert seen["roaming"] is True
 
     def test_falls_back_when_platformdirs_is_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -73,16 +102,19 @@ class TestConfigLocation:
             raise ImportError("no platformdirs here")
 
         monkeypatch.setattr(config, "import_module", boom)
+        monkeypatch.setattr(config.sys, "platform", "linux")
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         assert config.config_dir() == tmp_path / "cd-tui"
 
     def test_file_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(config.sys, "platform", "linux")
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         assert config.config_path() == tmp_path / "cd-tui" / "config.json"
 
     def test_ensure_config_dir_is_idempotent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(config.sys, "platform", "linux")
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         first = config.ensure_config_dir()
         assert first.is_dir()
@@ -150,11 +182,20 @@ class TestPathHelpers:
         assert os.path.isabs(config.normalize_path("."))
 
     def test_normalize_expands_user(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The point of this test is that "~" is expanded, not how the host
+        # spells the result: os.path.expanduser reads HOME on POSIX but
+        # USERPROFILE on Windows, and abspath then grafts on a drive letter.
+        # So set both variables and let the host normalise the expectation.
         monkeypatch.setenv("HOME", "/home/tester")
-        assert config.normalize_path("~/projects") == "/home/tester/projects"
+        monkeypatch.setenv("USERPROFILE", "/home/tester")
+        assert config.normalize_path("~/projects") == os.path.normpath(
+            os.path.abspath("/home/tester/projects")
+        )
 
     def test_normalize_strips_trailing_separator(self) -> None:
-        assert config.normalize_path("/a/b/") == "/a/b"
+        # The separator that gets stripped is the host's; what matters is that
+        # normalising "/a/b/" lands on the same value as normalising "/a/b".
+        assert config.normalize_path("/a/b/") == absolutised("/a/b")
 
     def test_default_alias_uses_the_folder_name(self) -> None:
         assert config.default_alias("/home/u/src/my-project") == "my-project"
@@ -181,9 +222,10 @@ class TestCrud:
             config.add_bookmark(sample, "  ", "/one/delta")
 
     def test_default_alias_feeds_a_suggested_add(self, sample: list[Bookmark]) -> None:
-        suggested = config.default_alias("/one/delta")
-        out = config.add_bookmark(sample, suggested, "/one/delta")
-        assert out[-1] == Bookmark("delta", "/one/delta")
+        folder = absolutised("/one/delta")
+        suggested = config.default_alias(folder)
+        out = config.add_bookmark(sample, suggested, folder)
+        assert out[-1] == Bookmark("delta", folder)
 
     def test_add_rejects_a_blank_path(self, sample: list[Bookmark]) -> None:
         with pytest.raises(ConfigError, match="path"):
@@ -199,7 +241,7 @@ class TestCrud:
 
     def test_add_normalizes_the_path(self, sample: list[Bookmark]) -> None:
         out = config.add_bookmark(sample, "delta", "/one/delta/")
-        assert out[-1].path == "/one/delta"
+        assert out[-1].path == absolutised("/one/delta")
 
     def test_input_is_not_mutated(self, sample: list[Bookmark]) -> None:
         config.add_bookmark(sample, "delta", "/one/delta")
@@ -251,7 +293,7 @@ class TestCrud:
 
     def test_replace_path(self, sample: list[Bookmark]) -> None:
         out = config.replace_bookmark_path(sample, 0, "/two/alpha/")
-        assert out[0] == Bookmark("alpha", "/two/alpha")
+        assert out[0] == Bookmark("alpha", absolutised("/two/alpha"))
 
     def test_replace_path_rejects_blank(self, sample: list[Bookmark]) -> None:
         with pytest.raises(ConfigError, match="path"):
@@ -403,9 +445,12 @@ class TestTargetFile:
 
     def test_write_then_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(config, "target_file_path", lambda: tmp_path / ".cd_tui_target")
-        written = config.write_target_file("/some/folder")
+        # write_target_file normalises, so hand it a path the host already agrees
+        # with, otherwise the round trip only holds on POSIX.
+        folder = str(tmp_path / "some" / "folder")
+        written = config.write_target_file(folder)
         assert written == tmp_path / ".cd_tui_target"
-        assert config.read_target_file() == "/some/folder"
+        assert config.read_target_file() == folder
 
     def test_content_is_usable_by_a_shell_substitution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -413,9 +458,13 @@ class TestTargetFile:
         # The wrappers do target=$(cat file); make sure no stray quoting or
         # NUL bytes would break that.
         monkeypatch.setattr(config, "target_file_path", lambda: tmp_path / ".cd_tui_target")
-        config.write_target_file("/a folder/with spaces & $dollar")
-        assert config.read_target_file() == "/a folder/with spaces & $dollar"
+        folder = str(tmp_path / "a folder" / "with spaces & $dollar")
+        config.write_target_file(folder)
+        assert config.read_target_file() == folder
 
+    @pytest.mark.skipif(
+        os.name == "nt", reason="POSIX permission bits are emulated, not stored, on Windows"
+    )
     def test_is_owner_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(config, "target_file_path", lambda: tmp_path / ".cd_tui_target")
         written = config.write_target_file("/x")
@@ -484,6 +533,7 @@ class TestEffectiveConfigPath:
         assert config.effective_config_path("") == Path("")
 
     def test_describe_config_location_mentions_the_override(self) -> None:
-        text = config.describe_config_location("/tmp/other.json")
-        assert "/tmp/other.json" in text
+        override = absolutised("/tmp/other.json")
+        text = config.describe_config_location(override)
+        assert override in text
         assert "config" in text

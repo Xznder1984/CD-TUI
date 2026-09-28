@@ -215,6 +215,11 @@ def test_sh_wrapper_block_is_delimited(sh_script: str) -> None:
 
 
 def test_sh_is_syntactically_valid() -> None:
+    if os.name == "nt":
+        # Windows runners put the Windows-Store "bash" stub on PATH: it exists
+        # for `which`, but running it prints "To install..." and exits 1. There
+        # is no shell here for this check to meaningfully run.
+        pytest.skip("bash on a Windows runner is the Store stub, not a shell")
     if shutil.which("bash") is None:  # pragma: no cover - bash is everywhere
         pytest.skip("bash is not installed")
     proc = subprocess.run(
