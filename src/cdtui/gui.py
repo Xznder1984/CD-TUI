@@ -487,10 +487,17 @@ class SettingsPanel:
         self._done_button.grid(row=0, column=1, sticky="e")
 
     def _bind_global_keys(self) -> None:
-        """Install the application-wide key bindings."""
+        """Install the application-wide key bindings.
+
+        ``<Shift-Tab>`` is deliberately the only spelling used for backwards
+        traversal. Tk treats it as a synonym for ``<Shift-ISO_Left_Tab>`` on the
+        systems that have that keysym, so binding ``<ISO_Left_Tab>`` as well
+        bought nothing except a crash: macOS Tk builds reject the keysym with
+        ``TclError: bad event type or keysym``, which used to take down the
+        whole panel while it was being built.
+        """
         self._root.bind_all("<Tab>", lambda _event: self._cycle_focus(False), add="+")
         self._root.bind_all("<Shift-Tab>", lambda _event: self._cycle_focus(True), add="+")
-        self._root.bind_all("<ISO_Left_Tab>", lambda _event: self._cycle_focus(True), add="+")
         self._root.bind_all("<Escape>", lambda _event: self._on_done(), add="+")
 
     def _on_ctrl_return(self, _event: Any) -> str:

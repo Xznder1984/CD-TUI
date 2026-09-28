@@ -701,6 +701,42 @@ class TestReload:
         panel._reload_from_disk()
         assert panel._focus_order[-1] is panel._done_button
 
+    def test_panel_survives_a_keysym_tk_does_not_know(
+        self, config_file: Path, toolkit: gui.Toolkit, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Building the panel must not depend on any particular Tk build.
+
+        Binding ``<ISO_Left_Tab>`` alongside ``<Shift-Tab>`` looked harmless and
+        was not: macOS Tk builds reject that X11 keysym with ``TclError: bad
+        event type or keysym``, and because the bindings are installed while the
+        panel is being constructed, the settings window died on open. This
+        simulates a Tk that refuses the exotic keysym, which is what happened in
+        production.
+        """
+        real_bind_all = tkinter.Tk.bind_all
+        rejected: list[str] = []
+
+        def picky_bind_all(  # type: ignore[no-untyped-def]
+            self: tkinter.Misc, sequence: str, func: Any = None, add: Any = None
+        ) -> Any:
+            if "ISO_Left_Tab" in sequence:
+                rejected.append(sequence)
+                raise tkinter.TclError('bad event type or keysym "ISO_Left_Tab"')
+            return real_bind_all(self, sequence, func, add)
+
+        monkeypatch.setattr(tkinter.Tk, "bind_all", picky_bind_all)
+
+        instance = make_panel(config_file, toolkit, monkeypatch)
+        try:
+            # The point of the test: construction completed, and backwards
+            # traversal still works through the portable binding.
+            assert instance._cycle_focus(backwards=True) == "break"
+        finally:
+            with suppress(tkinter.TclError):  # pragma: no cover - may be gone
+                instance._root.destroy()
+        # Nothing tried the keysym that macOS rejects in the first place.
+        assert rejected == []
+
 
 # ---------------------------------------------------------------------------
 # The status bar

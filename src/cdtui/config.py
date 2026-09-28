@@ -49,6 +49,21 @@ __all__ = [
 #: platform config root).  Lower case with a dash, per platformdirs guidance.
 _APP_IDENTIFIER: Final[str] = "cd-tui"
 
+
+def _on_windows() -> bool:
+    """Report whether this is Windows, in a form type checkers cannot fold.
+
+    Written inline, ``sys.platform == "win32"`` lets mypy resolve the branch
+    against the interpreter running the check, which marked everything after the
+    Windows early-return as unreachable and failed the Windows CI job. Caching it
+    in a module constant fixes that but freezes the value at import time, so the
+    other platform's path can no longer be exercised by a test. Going through a
+    function keeps both properties: mypy cannot prove the result, and patching
+    ``sys.platform`` still takes effect.
+    """
+    return sys.platform == "win32"
+
+
 #: Schema version stored alongside the bookmark list for future migrations.
 _SCHEMA_VERSION: Final[int] = 1
 
@@ -125,7 +140,7 @@ def _fallback_config_dir() -> Path:
     * Windows: ``%APPDATA%\\cd-tui``
     * macOS / Linux: ``$XDG_CONFIG_HOME/cd-tui`` or ``~/.config/cd-tui``
     """
-    if sys.platform == "win32":
+    if _on_windows():
         base = os.environ.get("APPDATA") or ""
         if not base:
             base = str(Path.home() / "AppData" / "Roaming")
@@ -151,7 +166,7 @@ def config_dir() -> Path:
     implementation of the same layout is used instead.  The directory is *not*
     created here; call :func:`ensure_config_dir` for that.
     """
-    backend = "windows" if sys.platform == "win32" else "unix"
+    backend = "windows" if _on_windows() else "unix"
     try:
         module = import_module(f"platformdirs.{backend}")
         if backend == "unix":
